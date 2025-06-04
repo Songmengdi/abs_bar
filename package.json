@@ -1,0 +1,76 @@
+{
+  "name": "impl-nav",
+  "displayName": "impl-nav",
+  "description": "快速定位接口及实现",
+  "version": "0.1.1",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:java",
+    "onLanguage:python"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "abs-bar.goToImplementations",
+        "title": "go to impl"
+      },
+      {
+        "command": "abs-bar.goToMethodImplementations",
+        "title": "go to method impl"
+      },
+      {
+        "command": "abs-bar.goToInterface",
+        "title": "go to interface"
+      },
+      {
+        "command": "abs-bar.goToInterfaceMethod",
+        "title": "go to interface method"
+      },
+      {
+        "command": "abs-bar.goToPythonImplementations",
+        "title": "go to python impl"
+      },
+      {
+        "command": "abs-bar.goToPythonMethodImplementations",
+        "title": "go to python method impl"
+      },
+      {
+        "command": "abs-bar.goToPythonAbstract",
+        "title": "go to python abstract"
+      },
+      {
+        "command": "abs-bar.goToPythonAbstractMethod",
+        "title": "go to python abstract method"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "20.x",
+    "@types/vscode": "^1.96.0",
+    "@typescript-eslint/eslint-plugin": "^8.28.0",
+    "@typescript-eslint/parser": "^8.28.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
+    "eslint": "^9.23.0",
+    "typescript": "^5.8.2"
+  },
+  "dependencies": {
+    "axios": "^1.8.4"
+  }
+}
