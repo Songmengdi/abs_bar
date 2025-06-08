@@ -96,6 +96,22 @@ class CommandService {
     getPythonIndexService() {
         return this.pythonIndexService;
     }
+    /**
+     * 调试方法：检查重复数据
+     */
+    debugCheckDuplicates() {
+        console.log('=== 开始调试检查 ===');
+        this.pythonIndexService.debugCheckDuplicateMethods();
+        const stats = this.pythonIndexService.getCacheStats();
+        console.log('缓存统计:', stats);
+        console.log('=== 调试检查完成 ===');
+    }
+    /**
+     * 调试方法：检查特定抽象方法的实现索引
+     */
+    debugCheckMethodImplementations(abstractClassName, methodName) {
+        this.pythonIndexService.debugCheckMethodImplementations(abstractClassName, methodName);
+    }
 }
 exports.CommandService = CommandService;
 //# sourceMappingURL=commandService.js.map

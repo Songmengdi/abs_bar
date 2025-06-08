@@ -87,4 +87,23 @@ export class CommandService {
     public getPythonIndexService(): PythonIndexService {
         return this.pythonIndexService;
     }
+    
+    /**
+     * 调试方法：检查重复数据
+     */
+    public debugCheckDuplicates(): void {
+        console.log('=== 开始调试检查 ===');
+        this.pythonIndexService.debugCheckDuplicateMethods();
+        
+        const stats = this.pythonIndexService.getCacheStats();
+        console.log('缓存统计:', stats);
+        console.log('=== 调试检查完成 ===');
+    }
+    
+    /**
+     * 调试方法：检查特定抽象方法的实现索引
+     */
+    public debugCheckMethodImplementations(abstractClassName: string, methodName: string): void {
+        this.pythonIndexService.debugCheckMethodImplementations(abstractClassName, methodName);
+    }
 } 

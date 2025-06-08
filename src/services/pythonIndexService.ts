@@ -57,6 +57,7 @@ export class PythonIndexService {
      * 扫描工作区中的所有Python文件，建立ABC索引
      */
     public async buildIndex(): Promise<void> {
+        const startTime = Date.now();
         console.log('开始构建Python ABC索引...');
         
         try {
@@ -72,18 +73,50 @@ export class PythonIndexService {
             this.fileImplementationClasses.clear();
             this.fileImplementationMethods.clear();
             
-            // 扫描每个Python文件
-            for (const file of pythonFiles) {
-                await this.scanPythonFile(file);
+            // 分批处理文件，避免内存压力
+            const batchSize = 50;
+            let processedFiles = 0;
+            
+            for (let i = 0; i < pythonFiles.length; i += batchSize) {
+                const batch = pythonFiles.slice(i, i + batchSize);
+                
+                // 并行处理批次内的文件
+                await Promise.all(batch.map(async (file) => {
+                    await this.scanPythonFile(file);
+                    processedFiles++;
+                    
+                    // 每处理100个文件输出一次进度
+                    if (processedFiles % 100 === 0) {
+                        console.log(`已处理 ${processedFiles}/${pythonFiles.length} 个文件`);
+                    }
+                }));
             }
+            
+            const scanTime = Date.now();
+            console.log(`文件扫描完成，耗时: ${scanTime - startTime}ms`);
             
             // 构建实现类索引
             await this.buildImplementationIndex();
             
+            const implTime = Date.now();
+            console.log(`实现类索引构建完成，耗时: ${implTime - scanTime}ms`);
+            
             // 构建方法级别索引
             await this.buildMethodIndex();
             
-            console.log(`Python ABC索引构建完成，共找到 ${this.abstractClasses.size} 个ABC类，${this.getTotalImplementationCount()} 个实现类，${this.getTotalMethodCount()} 个实现方法`);
+            const methodTime = Date.now();
+            console.log(`方法索引构建完成，耗时: ${methodTime - implTime}ms`);
+            
+            // 验证缓存一致性
+            this.validateCacheConsistency();
+            
+            const totalTime = Date.now() - startTime;
+            const stats = this.getCacheStats();
+            
+            console.log(`Python ABC索引构建完成，总耗时: ${totalTime}ms`);
+            console.log(`索引统计: ${stats.abstractClasses} 个ABC类，${stats.implementationClasses} 个实现类，${stats.implementationMethods} 个实现方法`);
+            console.log(`文件级缓存: ${stats.fileAbstractClasses} 个抽象类文件，${stats.fileImplementationClasses} 个实现类文件，${stats.fileImplementationMethods} 个方法文件`);
+            
         } catch (error: any) {
             console.error('构建Python ABC索引时出错:', error);
         }
@@ -100,6 +133,8 @@ export class PythonIndexService {
             
             // 检查是否包含ABC导入
             if (!this.hasAbcImport(content)) {
+                // 即使没有ABC导入，也要检查是否有实现类
+                await this.scanImplementationFile(fileUri);
                 return;
             }
             
@@ -120,6 +155,9 @@ export class PythonIndexService {
             if (classNames.length > 0) {
                 this.fileAbstractClasses.set(fileUri.fsPath, classNames);
             }
+            
+            // 同时扫描实现类（一个文件可能既有抽象类又有实现类）
+            await this.scanImplementationFile(fileUri);
             
         } catch (error: any) {
             console.error(`扫描Python文件时出错: ${fileUri.fsPath}`, error);
@@ -378,8 +416,22 @@ export class PythonIndexService {
                 if (!this.implementationMethods.has(methodKey)) {
                     this.implementationMethods.set(methodKey, []);
                 }
-                this.implementationMethods.get(methodKey)!.push(method);
-                console.log(`找到实现方法: ${method.className}.${method.methodName} 在 ${method.filePath}:${method.lineNumber + 1}`);
+                
+                // 检查是否已存在相同的方法，避免重复添加
+                const existingMethods = this.implementationMethods.get(methodKey)!;
+                const alreadyExists = existingMethods.some(existing => 
+                    existing.filePath === method.filePath && 
+                    existing.className === method.className &&
+                    existing.methodName === method.methodName &&
+                    existing.abstractClassName === method.abstractClassName
+                );
+                
+                if (!alreadyExists) {
+                    existingMethods.push(method);
+                    console.log(`找到实现方法: ${method.className}.${method.methodName} 在 ${method.filePath}:${method.lineNumber + 1}`);
+                } else {
+                    console.log(`跳过重复实现方法: ${method.className}.${method.methodName} 在 ${method.filePath}:${method.lineNumber + 1}`);
+                }
             }
             
         } catch (error: any) {
@@ -474,6 +526,9 @@ export class PythonIndexService {
             // 重新构建该文件相关的实现类和方法索引
             await this.rebuildRelatedIndexes(fileUri.fsPath);
             
+            // 验证缓存一致性
+            this.validateCacheConsistency(fileUri.fsPath);
+            
             console.log(`文件索引更新完成: ${fileUri.fsPath}`);
             
         } catch (error: any) {
@@ -482,28 +537,186 @@ export class PythonIndexService {
     }
     
     /**
+     * 验证缓存一致性
+     */
+    private validateCacheConsistency(filePath?: string): void {
+        try {
+            // 验证抽象类索引一致性
+            for (const [className, abstractClass] of this.abstractClasses.entries()) {
+                const fileClasses = this.fileAbstractClasses.get(abstractClass.filePath) || [];
+                if (!fileClasses.includes(className)) {
+                    console.warn(`缓存不一致: 抽象类 ${className} 在全局索引中存在，但在文件级缓存中缺失`);
+                }
+            }
+            
+            // 验证实现类索引一致性
+            for (const [abstractClassName, implementations] of this.implementationClasses.entries()) {
+                for (const impl of implementations) {
+                    const fileImplementations = this.fileImplementationClasses.get(impl.filePath) || [];
+                    const exists = fileImplementations.some(fileImpl => 
+                        fileImpl.className === impl.className && fileImpl.filePath === impl.filePath
+                    );
+                    if (!exists) {
+                        console.warn(`缓存不一致: 实现类 ${impl.className} 在全局索引中存在，但在文件级缓存中缺失`);
+                    }
+                }
+            }
+            
+            // 验证方法索引一致性
+            for (const [methodKey, methods] of this.implementationMethods.entries()) {
+                for (const method of methods) {
+                    const fileMethods = this.fileImplementationMethods.get(method.filePath) || [];
+                    const exists = fileMethods.some(fileMethod => 
+                        fileMethod.methodName === method.methodName && 
+                        fileMethod.className === method.className &&
+                        fileMethod.filePath === method.filePath
+                    );
+                    if (!exists) {
+                        console.warn(`缓存不一致: 方法 ${method.className}.${method.methodName} 在全局索引中存在，但在文件级缓存中缺失`);
+                    }
+                }
+            }
+            
+            if (filePath) {
+                console.log(`缓存一致性验证完成: ${filePath}`);
+            }
+            
+        } catch (error: any) {
+            console.error('缓存一致性验证时出错:', error);
+        }
+    }
+    
+    /**
+     * 获取缓存统计信息
+     */
+    public getCacheStats(): {
+        abstractClasses: number;
+        implementationClasses: number;
+        implementationMethods: number;
+        fileAbstractClasses: number;
+        fileImplementationClasses: number;
+        fileImplementationMethods: number;
+    } {
+        return {
+            abstractClasses: this.abstractClasses.size,
+            implementationClasses: this.getTotalImplementationCount(),
+            implementationMethods: this.getTotalMethodCount(),
+            fileAbstractClasses: this.fileAbstractClasses.size,
+            fileImplementationClasses: this.fileImplementationClasses.size,
+            fileImplementationMethods: this.fileImplementationMethods.size
+        };
+    }
+    
+    /**
+     * 调试方法：检查方法索引中的重复数据
+     */
+    public debugCheckDuplicateMethods(): void {
+        console.log('=== 检查方法索引中的重复数据 ===');
+        
+        for (const [methodKey, methods] of this.implementationMethods.entries()) {
+            if (methods.length > 1) {
+                console.log(`方法键 ${methodKey} 有 ${methods.length} 个实现:`);
+                
+                const uniqueMethods = new Set();
+                const duplicates: PythonImplementationMethod[] = [];
+                
+                for (const method of methods) {
+                    const signature = `${method.filePath}:${method.className}.${method.methodName}:${method.lineNumber}`;
+                    if (uniqueMethods.has(signature)) {
+                        duplicates.push(method);
+                    } else {
+                        uniqueMethods.add(signature);
+                    }
+                    console.log(`  - ${signature}`);
+                }
+                
+                if (duplicates.length > 0) {
+                    console.warn(`❌ 发现 ${duplicates.length} 个重复方法:`);
+                    duplicates.forEach(dup => {
+                        console.warn(`    重复: ${dup.filePath}:${dup.className}.${dup.methodName}:${dup.lineNumber}`);
+                    });
+                } else {
+                    console.log(`✅ 无重复数据`);
+                }
+            }
+        }
+        
+        console.log('=== 重复数据检查完成 ===');
+    }
+    
+    /**
+     * 调试方法：检查特定抽象方法的实现索引
+     */
+    public debugCheckMethodImplementations(abstractClassName: string, methodName: string): void {
+        console.log(`=== 检查抽象方法实现索引: ${abstractClassName}.${methodName} ===`);
+        
+        const methodKey = `${abstractClassName}.${methodName}`;
+        const implementations = this.implementationMethods.get(methodKey) || [];
+        
+        console.log(`全局方法索引中找到 ${implementations.length} 个实现:`);
+        implementations.forEach((impl, index) => {
+            console.log(`  ${index + 1}. ${impl.className}.${impl.methodName} 在 ${impl.filePath}:${impl.lineNumber + 1}`);
+        });
+        
+        // 检查抽象类是否存在
+        const abstractClass = this.abstractClasses.get(abstractClassName);
+        if (abstractClass) {
+            console.log(`✅ 抽象类 ${abstractClassName} 存在于索引中`);
+            const abstractMethod = abstractClass.methods.find(m => m.methodName === methodName);
+            if (abstractMethod) {
+                console.log(`✅ 抽象方法 ${methodName} 存在于抽象类中`);
+            } else {
+                console.warn(`❌ 抽象方法 ${methodName} 不存在于抽象类中`);
+            }
+        } else {
+            console.warn(`❌ 抽象类 ${abstractClassName} 不存在于索引中`);
+        }
+        
+        // 检查实现类索引
+        const implClasses = this.implementationClasses.get(abstractClassName) || [];
+        console.log(`实现类索引中找到 ${implClasses.length} 个实现类:`);
+        implClasses.forEach((impl, index) => {
+            console.log(`  ${index + 1}. ${impl.className} 在 ${impl.filePath}:${impl.lineNumber + 1}`);
+        });
+        
+        console.log('=== 检查完成 ===');
+    }
+    
+    /**
      * 从索引中移除指定文件的所有数据
      */
     private async removeFileFromIndex(filePath: string): Promise<void> {
+        console.log(`开始清理文件索引: ${filePath}`);
+        
         // 移除抽象类
         const oldAbstractClasses = this.fileAbstractClasses.get(filePath) || [];
         for (const className of oldAbstractClasses) {
+            console.log(`移除抽象类: ${className}`);
             this.abstractClasses.delete(className);
             
             // 移除相关的实现类映射
+            const removedImplementations = this.implementationClasses.get(className) || [];
             this.implementationClasses.delete(className);
             
             // 移除相关的方法映射
             for (const [methodKey, methods] of this.implementationMethods.entries()) {
                 if (methodKey.startsWith(`${className}.`)) {
+                    console.log(`移除方法映射: ${methodKey}`);
                     this.implementationMethods.delete(methodKey);
                 }
+            }
+            
+            // 清理孤立的实现类方法索引
+            for (const impl of removedImplementations) {
+                this.cleanupOrphanedMethodsForImplementation(impl, className);
             }
         }
         
         // 移除实现类
         const oldImplementationClasses = this.fileImplementationClasses.get(filePath) || [];
         for (const implClass of oldImplementationClasses) {
+            console.log(`移除实现类: ${implClass.className}`);
+            
             // 从各个抽象类的实现列表中移除
             for (const baseClass of implClass.baseClasses) {
                 const implementations = this.implementationClasses.get(baseClass) || [];
@@ -514,8 +727,18 @@ export class PythonIndexService {
                 if (filteredImplementations.length > 0) {
                     this.implementationClasses.set(baseClass, filteredImplementations);
                 } else {
+                    // 如果没有实现类了，也要清理相关的方法索引
+                    console.log(`抽象类 ${baseClass} 没有实现类了，清理相关方法索引`);
+                    for (const [methodKey, methods] of this.implementationMethods.entries()) {
+                        if (methodKey.startsWith(`${baseClass}.`)) {
+                            this.implementationMethods.delete(methodKey);
+                        }
+                    }
                     this.implementationClasses.delete(baseClass);
                 }
+                
+                // 清理该实现类的方法索引
+                this.cleanupOrphanedMethodsForImplementation(implClass, baseClass);
             }
         }
         
@@ -531,6 +754,7 @@ export class PythonIndexService {
             if (filteredMethods.length > 0) {
                 this.implementationMethods.set(methodKey, filteredMethods);
             } else {
+                console.log(`移除方法索引: ${methodKey}`);
                 this.implementationMethods.delete(methodKey);
             }
         }
@@ -539,6 +763,29 @@ export class PythonIndexService {
         this.fileAbstractClasses.delete(filePath);
         this.fileImplementationClasses.delete(filePath);
         this.fileImplementationMethods.delete(filePath);
+        
+        console.log(`文件索引清理完成: ${filePath}`);
+    }
+    
+    /**
+     * 清理指定实现类的孤立方法索引
+     */
+    private cleanupOrphanedMethodsForImplementation(implementation: PythonImplementationClass, abstractClassName: string): void {
+        // 查找并移除该实现类的所有方法索引
+        for (const [methodKey, methods] of this.implementationMethods.entries()) {
+            if (methodKey.startsWith(`${abstractClassName}.`)) {
+                const filteredMethods = methods.filter(m => 
+                    m.filePath !== implementation.filePath || m.className !== implementation.className
+                );
+                
+                if (filteredMethods.length > 0) {
+                    this.implementationMethods.set(methodKey, filteredMethods);
+                } else {
+                    console.log(`清理孤立方法索引: ${methodKey}`);
+                    this.implementationMethods.delete(methodKey);
+                }
+            }
+        }
     }
     
     /**
@@ -550,18 +797,63 @@ export class PythonIndexService {
         
         // 为新的抽象类重新构建实现类索引
         for (const abstractClassName of newAbstractClasses) {
-            // 扫描所有文件，查找该抽象类的实现
+            // 利用现有的文件级缓存，避免重复扫描
             for (const [otherFilePath, implementations] of this.fileImplementationClasses.entries()) {
+                // 跳过当前文件，避免重复处理
+                if (otherFilePath === filePath) {
+                    continue;
+                }
+                
                 for (const implementation of implementations) {
                     if (implementation.baseClasses.includes(abstractClassName)) {
                         if (!this.implementationClasses.has(abstractClassName)) {
                             this.implementationClasses.set(abstractClassName, []);
                         }
-                        this.implementationClasses.get(abstractClassName)!.push(implementation);
                         
-                        // 重新构建方法索引
-                        await this.rebuildMethodIndexForImplementation(implementation, abstractClassName);
+                        // 检查是否已存在，避免重复添加
+                        const existingImpls = this.implementationClasses.get(abstractClassName)!;
+                        const alreadyExists = existingImpls.some(existing => 
+                            existing.filePath === implementation.filePath && 
+                            existing.className === implementation.className
+                        );
+                        
+                        if (!alreadyExists) {
+                            existingImpls.push(implementation);
+                            
+                            // 重新构建方法索引
+                            await this.rebuildMethodIndexForImplementation(implementation, abstractClassName);
+                        }
                     }
+                }
+            }
+        }
+        
+        // 处理当前文件中的实现类，查找它们对应的抽象类
+        const currentFileImplementations = this.fileImplementationClasses.get(filePath) || [];
+        for (const implementation of currentFileImplementations) {
+            for (const baseClass of implementation.baseClasses) {
+                // 检查基类是否是已知的抽象类
+                if (this.abstractClasses.has(baseClass)) {
+                    if (!this.implementationClasses.has(baseClass)) {
+                        this.implementationClasses.set(baseClass, []);
+                    }
+                    
+                    // 检查是否已存在，避免重复添加
+                    const existingImpls = this.implementationClasses.get(baseClass)!;
+                    const alreadyExists = existingImpls.some(existing => 
+                        existing.filePath === implementation.filePath && 
+                        existing.className === implementation.className
+                    );
+                    
+                    if (!alreadyExists) {
+                        existingImpls.push(implementation);
+                        console.log(`添加当前文件实现类: ${implementation.className} -> ${baseClass}`);
+                    }
+                    
+                    // ✅ 关键修复：无论是否重复，都要重新构建方法索引
+                    // 因为方法内容可能已经改变（移除后重新添加）
+                    console.log(`重建当前文件方法索引: ${implementation.className} -> ${baseClass}`);
+                    await this.rebuildMethodIndexForImplementation(implementation, baseClass);
                 }
             }
         }
@@ -572,8 +864,11 @@ export class PythonIndexService {
      */
     private async rebuildMethodIndexForImplementation(implementation: PythonImplementationClass, abstractClassName: string): Promise<void> {
         try {
+            console.log(`开始重建方法索引: ${implementation.className} (${implementation.filePath}) -> ${abstractClassName}`);
+            
             const abstractClass = this.abstractClasses.get(abstractClassName);
             if (!abstractClass) {
+                console.log(`未找到抽象类: ${abstractClassName}`);
                 return;
             }
             
@@ -582,14 +877,57 @@ export class PythonIndexService {
             const lines = content.split('\n');
             
             const implementationMethods = this.findImplementationMethods(lines, implementation, abstractClass);
+            console.log(`在 ${implementation.className} 中找到 ${implementationMethods.length} 个实现方法`);
             
+            // 更新全局方法索引
             for (const method of implementationMethods) {
                 const methodKey = `${abstractClassName}.${method.methodName}`;
                 if (!this.implementationMethods.has(methodKey)) {
                     this.implementationMethods.set(methodKey, []);
                 }
-                this.implementationMethods.get(methodKey)!.push(method);
+                
+                // 检查是否已存在相同的方法，避免重复添加
+                const existingMethods = this.implementationMethods.get(methodKey)!;
+                const alreadyExists = existingMethods.some(existing => 
+                    existing.filePath === method.filePath && 
+                    existing.className === method.className &&
+                    existing.methodName === method.methodName &&
+                    existing.abstractClassName === method.abstractClassName
+                );
+                
+                if (!alreadyExists) {
+                    existingMethods.push(method);
+                    console.log(`添加方法到全局索引: ${method.className}.${method.methodName} -> ${abstractClassName}.${method.methodName}`);
+                } else {
+                    console.log(`跳过重复方法: ${method.className}.${method.methodName} -> ${abstractClassName}.${method.methodName}`);
+                }
             }
+            
+            // 更新文件级别的方法缓存
+            if (implementationMethods.length > 0) {
+                const existingMethods = this.fileImplementationMethods.get(implementation.filePath) || [];
+                
+                // 避免重复添加相同的方法
+                const newMethods = implementationMethods.filter(newMethod => 
+                    !existingMethods.some(existing => 
+                        existing.methodName === newMethod.methodName &&
+                        existing.className === newMethod.className &&
+                        existing.abstractClassName === newMethod.abstractClassName
+                    )
+                );
+                
+                if (newMethods.length > 0) {
+                    const updatedMethods = [...existingMethods, ...newMethods];
+                    this.fileImplementationMethods.set(implementation.filePath, updatedMethods);
+                    console.log(`更新文件级方法缓存: ${implementation.filePath} 新增 ${newMethods.length} 个方法`);
+                } else {
+                    console.log(`文件级方法缓存无需更新: ${implementation.filePath} (无新方法)`);
+                }
+            } else {
+                console.log(`${implementation.className} 中没有找到实现方法`);
+            }
+            
+            console.log(`方法索引重建完成: ${implementation.className} -> ${abstractClassName}`);
             
         } catch (error: any) {
             console.error(`重新构建方法索引时出错: ${implementation.filePath}`, error);
