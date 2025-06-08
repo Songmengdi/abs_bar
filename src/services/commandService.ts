@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { Commands } from '../utils/constants';
+import { JavaIndexService } from './javaIndexService';
 import { JavaNavigationService } from './javaNavigationService';
 import { PythonIndexService } from './pythonIndexService';
 import { PythonNavigationService } from './pythonNavigationService';
@@ -13,10 +14,17 @@ export class CommandService {
     private pythonNavigationService: PythonNavigationService;
     private pythonIndexService: PythonIndexService;
     
-    constructor() {
-        this.javaNavigationService = new JavaNavigationService();
+    constructor(javaIndexService?: JavaIndexService) {
         this.pythonIndexService = new PythonIndexService();
         this.pythonNavigationService = new PythonNavigationService(this.pythonIndexService);
+        
+        if (javaIndexService) {
+            this.javaNavigationService = new JavaNavigationService(javaIndexService);
+        } else {
+            // 为了向后兼容，创建一个临时的JavaIndexService
+            const tempJavaIndexService = new JavaIndexService();
+            this.javaNavigationService = new JavaNavigationService(tempJavaIndexService);
+        }
     }
     
     /**

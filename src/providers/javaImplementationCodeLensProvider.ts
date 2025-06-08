@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { JavaIndexService } from '../services/javaIndexService';
 import { ButtonTitles, Commands, LanguageIds } from '../utils/constants';
 
 /**
@@ -6,6 +7,7 @@ import { ButtonTitles, Commands, LanguageIds } from '../utils/constants';
  * 用于在Java实现类和实现方法上提供CodeLens跳转按钮
  */
 export class JavaImplementationCodeLensProvider implements vscode.CodeLensProvider {
+    constructor(private javaIndexService: JavaIndexService) {}
     
     public provideCodeLenses(
         document: vscode.TextDocument,
@@ -15,6 +17,9 @@ export class JavaImplementationCodeLensProvider implements vscode.CodeLensProvid
         if (document.languageId !== LanguageIds.JAVA) {
             return [];
         }
+
+        // 触发缓存预热
+        this.preheatCache(document);
 
         const codeLenses: vscode.CodeLens[] = [];
         const text = document.getText();
@@ -179,5 +184,19 @@ export class JavaImplementationCodeLensProvider implements vscode.CodeLensProvid
         }
         
         return methods;
+    }
+    
+    /**
+     * 预热缓存
+     */
+    private preheatCache(document: vscode.TextDocument): void {
+        try {
+            // 异步触发文件扫描，不阻塞CodeLens提供
+            this.javaIndexService.scanJavaFile(document.fileName).catch(error => {
+                console.error(`预热缓存失败: ${document.fileName}`, error);
+            });
+        } catch (error: any) {
+            console.error(`预热缓存时出错: ${document.fileName}`, error);
+        }
     }
 } 
